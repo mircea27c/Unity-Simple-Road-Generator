@@ -1,4 +1,4 @@
- using UnityEngine;
+using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
 [CustomEditor(typeof(RoadsGenerator))]
@@ -26,49 +26,130 @@ public class RoadsGeneratorInspector : Editor {
 #endif
 public class RoadsGenerator : MonoBehaviour
 {
-    [SerializeField] Material roadsMat;
-    [SerializeField] float groundOffset;
-    [SerializeField] float roadWidth;
-    [SerializeField] float smoothing = 1;
-    [SerializeField] float maxSmoothingPointDistance;
-    [SerializeField] float roadHeight;
-    [SerializeField] float sideExtrusion;
-    [SerializeField] float roadPaintDistancing;
-    [SerializeField] int groundClippingElimination;
-    [SerializeField] bool debugMode;
+    [Tooltip("Usually the terrain layer")]
     [SerializeField] LayerMask groundLayer;
-    private void Start()
-    {
-    }
+
+    [Header("Road texture")]
+    [SerializeField] Material roadsMat;
+    [Tooltip("Distance between lines on road")]
+    //how stretched the texture is along the road
+    [SerializeField] float roadPaintDistancing;
+
+    [Header("Road dimensions")]
+    [SerializeField] float roadWidth;
+    [Tooltip("Distance from road to ground")]
+    [SerializeField] float groundOffset;
+    [Tooltip("How far it goes into the ground( should be bigger than groundOffset)")]
+    [SerializeField] float roadHeight;
+    [Tooltip("How far outwards the sides go")]
+    [SerializeField] float sideExtrusion;
+
+    [Header("Road smoothing")]
+    [SerializeField] float smoothing = 1;
+    [Tooltip("How much the road bends around every point(higher value = wider turns)")]
+    [SerializeField] float maxSmoothingPointDistance;
+    [Tooltip("Tries to eliminate intersection with terrain")]
+    [SerializeField] int groundClippingElimination;
+
+    [Header("Gameobject Config")]
+    [SerializeField] string goTag = "Untagged";
+    [SerializeField] string layer = "Default";
+    [SerializeField] bool staticGo;
+
+    [SerializeField] bool debugMode;
+
+    /// <summary>
+    /// IMPORTANT! Make sure to rename your road GO after you're satisfied with the result
+    /// the script will delete the old GO named "Road_Generated" when generating a new one
+    /// </summary>
 
     Vector3[] verts;
-    Vector2[] uvs;
     int[] tris;
     Transform[] points;
 
     struct pair {
+        //Each Point in the road will have 2 vertices generated on the left and right
         public Vector3 left;
         public Vector3 right;
     }
     public void Generate()
     {
-        GameObject oldRoad = GameObject.Find("Road_Generated");
-        DestroyImmediate(oldRoad);
+        RemoveOldRoad();
 
-        ClearSmoothingPoints();
+        //The points that define the road
         points = new Transform[transform.childCount];
 
+        //The new road GO
         GameObject newGo = new GameObject("Road_Generated", typeof(MeshFilter), typeof(MeshRenderer));
 
         ApplySmoothing();
 
-        GetPoints();
+        InitializeNewMeshData();
 
+        ComputeVertices();
 
-        verts = new Vector3[points.Length * 2];
-        tris = new int[(points.Length - 1) * 6];
+        ComputeTriangles();
 
+        //create the new mesh and assign generated data
+        Mesh newMesh = new Mesh();
+        newMesh.vertices = verts;
+        newMesh.triangles = tris;
+        newMesh.name = "GeneratedRoadMesh";
 
+        SetStatic(newGo);
+
+        GenerateRoadSides(newMesh);
+
+        CalculateUVs(newMesh);
+
+        //Final confingurations of the newly created Road GameObject
+        newMesh.RecalculateNormals();
+
+        SetTagAndLayer(newGo);
+
+        //Add the Collider, Filter and Renderer to the GO
+        newGo.AddComponent<MeshCollider>();
+        newGo.GetComponent<MeshCollider>().sharedMesh = newMesh;
+        newGo.GetComponent<MeshFilter>().mesh = newMesh;
+        newGo.GetComponent<MeshRenderer>().sharedMaterial = roadsMat;
+
+        newGo.transform.position = transform.position;
+
+    }
+
+    private void SetTagAndLayer(GameObject newGo)
+    {
+        newGo.tag = goTag;
+        newGo.layer = LayerMask.NameToLayer(layer);
+    }
+
+    private void SetStatic(GameObject newGo)
+    {
+        if (staticGo)
+        {
+#if UNITY_EDITOR
+            StaticEditorFlags flags = StaticEditorFlags.ContributeGI | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OffMeshLinkGeneration | StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.NavigationStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.ReflectionProbeStatic;
+            GameObjectUtility.SetStaticEditorFlags(newGo, flags);
+#endif
+        }
+    }
+
+    private void ComputeTriangles()
+    {
+        for (int i = 0; i < points.Length - 1; i++)
+        {
+            tris[0 + i * 6] = 0 + i * 2;
+            tris[1 + i * 6] = 2 + i * 2;
+            tris[2 + i * 6] = 1 + i * 2;
+            tris[3 + i * 6] = 1 + i * 2;
+            tris[4 + i * 6] = 2 + i * 2;
+            tris[5 + i * 6] = 3 + i * 2;
+        }
+    }
+
+    private void ComputeVertices()
+    {
+        //Gets the direction from the first point to the second
         Vector3 dir = points[1].position - points[0].position;
         dir = Vector3.Cross(dir.normalized, Vector3.down).normalized;
 
@@ -77,12 +158,10 @@ public class RoadsGenerator : MonoBehaviour
         verts[1] = vertPos.right;
 
         GetPoints();
-        for (int i = 0; i < points.Length; i++)
-        {
-            Vector3 pos = points[i].position;
-            pos.y = points[0].position.y;
-            points[i].position = pos;
-        }
+
+        //All points must have the same Y position
+        //Sets the height of all points to the height of the first
+        NormalizePointsHeight();
 
         //compute vertices
         for (int i = 0; i < points.Length; i++)
@@ -110,141 +189,50 @@ public class RoadsGenerator : MonoBehaviour
                     sign = -1;
                 }
 
-
                 if (unsignedAngle < 180 + angleMargin && unsignedAngle > 180 - angleMargin)
                 {
                     dir = points[i + 1].position - points[i].position;
                     dir = Vector3.Cross(dir.normalized, Vector3.down).normalized;
                 }
-                else {
+                else
+                {
                     dir = (points[i - 1].position - points[i].position).normalized + (points[i + 1].position - points[i].position).normalized;
                     dir *= sign;
                 }
 
-                //print(Vector3.SignedAngle(points[i - 1].position - points[i].position, points[i + 1].position - points[i].position, Vector3.up));
-
                 //Debug.DrawRay(points[i].position, dir.normalized * 5,Color.red, 60);
             }
             dir.Normalize();
-            //dir = points[2].position - points[1].position;
-            //dir = Vector3.Cross(dir.normalized, Vector3.down).normalized;
             vertPos = GetVertPos(points[i], dir);
             verts[2 * i] = vertPos.left;
             verts[2 * i + 1] = vertPos.right;
         }
-
-
-        //compute tris
-        for (int i = 0; i < points.Length - 1; i++)
-        {
-            tris[0 + i * 6] = 0 + i * 2;
-            tris[1 + i * 6] = 2 + i * 2;
-            tris[2 + i * 6] = 1 + i * 2;
-            tris[3 + i * 6] = 1 + i * 2;
-            tris[4 + i * 6] = 2 + i * 2;
-            tris[5 + i * 6] = 3 + i * 2;
-        }
-
-
-        //Generate sides
-
-        Mesh newMesh = new Mesh();
-        newMesh.vertices = verts;
-        newMesh.triangles = tris;
-        newMesh.name = "GeneratedRoadMesh";
-        newGo.tag = "Stone";
-        GenerateRoadSides(newMesh);
-
-        CalculateUVs(newMesh);
-        newMesh.RecalculateNormals();
-        newGo.AddComponent<MeshCollider>();
-        newGo.GetComponent<MeshCollider>().sharedMesh = newMesh;
-
-        //SmoothMeshSharpAngles(newMesh);
-
-        newGo.transform.position = transform.position;
-        newGo.GetComponent<MeshFilter>().mesh = newMesh;
-        newGo.GetComponent<MeshRenderer>().sharedMaterial = roadsMat;
     }
-    void SmoothMeshSharpAngles(Mesh mesh) {
-        /*
-         
-        2____3
-        |\  |
-        | \ |
-        |  \|
-       0_____1
-         
-         */
 
-        int[] tris = mesh.triangles;
-        Vector3[] verts = mesh.vertices;
-        int vertCount = verts.Length;
-
-        //find the new length of the verts array
-        for (int i = 1; i < points.Length - 1; i++)
+    private void NormalizePointsHeight()
+    {
+        for (int i = 0; i < points.Length; i++)
         {
-            Vector3 A = points[i - 1].position;
-            Vector3 B = points[i].position;
-            Vector3 C = points[i + 1].position;
-            if (Vector3.Angle((A - B).normalized, (C - B).normalized) >= 90)
-            {
-                vertCount += 2;
-            }
-        }
-
-        //resize the array
-        Vector3[] newVerts = new Vector3[vertCount];
-        for (int i = 0; i < verts.Length; i++)
-        {
-            newVerts[i] = verts[i];
-        }
-        verts = newVerts;
-
-
-        for (int i = 1; i < points.Length - 1; i++)
-        {
-
-            Vector3 A = points[i - 1].position;
-            Vector3 B = points[i].position;
-            Vector3 C = points[i + 1].position;
-            if (Vector3.Angle((A - B).normalized, (C - B).normalized) >= 90) {
-                continue;
-            }
-
-
-            Vector3 bis = (A - B).normalized + (C - B).normalized;
-            Vector3 perp = Vector3.Cross(bis, Vector3.down).normalized;
-            float angleBack = Vector3.Angle(perp, (A - B).normalized);
-            float angleFwd = Vector3.Angle(perp, (C - B).normalized);
-            if (angleFwd < angleBack)
-            {//reverse the perpendicular
-             //perpendicular should be facing the backwards direction
-                perp *= -1;
-            }
-
-            Vector3 leftVert = verts[i * 2];
-            Vector3 rightVert = verts[i * 2 + 1];
-            Vector3 correctPoint = B + perp * roadWidth / 2;
-
-            Vector3 smoothingPoint;
-
-            if (Vector3.Distance(leftVert, correctPoint) < Vector3.Distance(rightVert, correctPoint))
-            {
-                //use the left vert as smoothing point
-                smoothingPoint = leftVert;
-            }
-            else {
-                //use right vert
-                smoothingPoint = rightVert;
-            }
-
-            Vector3 newVertPos = smoothingPoint + (perp * 1.5f + (B - A).normalized).normalized * 3f;
-
-
-
+            Vector3 pos = points[i].position;
+            pos.y = points[0].position.y;
+            points[i].position = pos;
         }
     }
+
+    private void InitializeNewMeshData()
+    {
+        GetPoints();
+        verts = new Vector3[points.Length * 2];
+        tris = new int[(points.Length - 1) * 6];
+    }
+
+    private void RemoveOldRoad()
+    {
+        GameObject oldRoad = GameObject.Find("Road_Generated");
+        DestroyImmediate(oldRoad);
+        ClearSmoothingPoints();
+    }
+
     void GetPoints() {
         points = new Transform[transform.childCount];
         for (int i = 0; i < points.Length; i++)
@@ -391,18 +379,7 @@ public class RoadsGenerator : MonoBehaviour
         }
         return pos;
     }
-    void ComputeTris() {
-        int squareCount = (points.Length - 1);
-        for (int i = 0; i < squareCount; i++)
-        {
-            tris[0 + i * 6] = 0 + 2 * i;
-            tris[1 + i * 6] = 1 + 2 * i;
-            tris[2 + i * 6] = 2 + 2 * i;
-            tris[3 + i * 6] = 2 + 2 * i;
-            tris[4 + i * 6] = 1 + 2 * i;
-            tris[5 + i * 6] = 3 + 2 * i;
-        }
-    }
+
     void CalculateUVs(Mesh mesh) {
         GetPoints();
         Vector2[] uvs = new Vector2[mesh.vertexCount];
