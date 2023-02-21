@@ -460,26 +460,18 @@ public class RoadsGenerator : MonoBehaviour
         }
         tris = newTris;
 
-        /*
-        tris[t + 0] = v + 0;//28
-        tris[t + 1] = v + 2;
-        tris[t + 2] = 0;
-        tris[t + 3] = 0;
-        tris[t + 4] = v + 2;
-        tris[t + 5] = 2;
-                */
         //compute tris
 
         for (int i = 0; i < points.Length - 1; i++)
         {
-            //stanga
+            //left
             tris[t + 0 + i * 12] = v + i*2;
             tris[t + 1 + i * 12] = v + (i+1) * 2;
             tris[t + 2 + i * 12] = i * 2;
             tris[t + 3 + i * 12] = i*2;
             tris[t + 4 + i * 12] = v + (i + 1) * 2;
             tris[t + 5 + i * 12] = (i+1)* 2;
-            //dreapta
+            //right
             tris[t + 6 + i * 12] = i*2 + 1;
             tris[t + 7 + i * 12] = (i+1) * 2 + 1;
             tris[t + 8 + i * 12] = v + i*2 + 1;
